@@ -40,9 +40,12 @@ Frontend:
 
 ### Backend
 
-```bash
 cd Backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app:app --port 8000
+
+### Frontend 
+navigate to frontend folder - cd frontend 
+run npm run dev 
