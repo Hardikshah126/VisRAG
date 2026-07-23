@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Literal, Optional
 
 
 class AskRequest(BaseModel):
@@ -8,9 +8,12 @@ class AskRequest(BaseModel):
 
 
 class VisualEvidence(BaseModel):
-    path: Optional[str] = None   # ✅ allow missing
+    id: str
+    type: Literal["image", "table"]
     page: int
     caption: Optional[str] = None
+    src: Optional[str] = None
+    tableData: Optional[List[List[Any]]] = None
 
 
 class AskResponse(BaseModel):

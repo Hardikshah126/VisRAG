@@ -1,5 +1,5 @@
 import re
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
 from ingestion.embedder import embed_text
 from storage.qdrant_client import client, COLLECTION_NAME
@@ -39,7 +39,12 @@ def retrieve(query: str, doc_id: str, top_k: int = 8):
     # ✅ Step 2: Build Filter
     # -------------------------------
     must_conditions = [
-        FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
+        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+        # ✅ Images use CLIP vectors, incompatible with the MiniLM query vector
+        # used here — exclude them so they don't waste top_k slots on a
+        # meaningless cross-space similarity score. Images are fetched
+        # separately below via scroll() on the relevant pages.
+        FieldCondition(key="type", match=MatchAny(any=["text", "table"])),
     ]
 
     if page_number:

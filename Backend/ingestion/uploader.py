@@ -1,8 +1,11 @@
+import logging
 import uuid
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 
 from ingestion.embedder import embed_text, embed_image
 from storage.qdrant_client import client, COLLECTION_NAME
+
+logger = logging.getLogger(__name__)
 
 
 def upload_to_qdrant(blocks, doc_id: str):
@@ -15,7 +18,15 @@ def upload_to_qdrant(blocks, doc_id: str):
     ✅ images (figures)
     """
 
-    print(f"\n🚀 Uploading '{doc_id}' into Qdrant Collection = {COLLECTION_NAME}")
+    logger.info("Uploading '%s' into Qdrant collection = %s", doc_id, COLLECTION_NAME)
+
+    # ✅ Re-uploading a doc_id replaces its old points instead of duplicating them
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=Filter(
+            must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+        ),
+    )
 
     points = []
 
@@ -88,4 +99,4 @@ def upload_to_qdrant(blocks, doc_id: str):
         points=points
     )
 
-    print(f"✅ Uploaded {len(points)} multimodal points successfully!\n")
+    logger.info("Uploaded %d multimodal points successfully!", len(points))

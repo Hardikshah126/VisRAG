@@ -1,4 +1,8 @@
+import logging
+
 import camelot
+
+logger = logging.getLogger(__name__)
 
 
 def extract_tables(pdf_path):
@@ -15,7 +19,7 @@ def extract_tables(pdf_path):
     }
     """
 
-    print("\n📊 Running Camelot Table Extraction (STREAM mode)...")
+    logger.info("Running Camelot table extraction (stream mode)...")
 
     tables = camelot.read_pdf(
         pdf_path,
@@ -23,7 +27,7 @@ def extract_tables(pdf_path):
         flavor="stream"
     )
 
-    print(f"✅ Camelot detected {tables.n} tables")
+    logger.info("Camelot detected %d tables", tables.n)
 
     table_blocks = []
 

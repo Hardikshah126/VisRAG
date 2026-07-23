@@ -1,4 +1,8 @@
+import logging
+
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 
 def parse_pdf(pdf_path):
@@ -16,26 +20,26 @@ def parse_pdf(pdf_path):
     ]
     """
 
-    doc = fitz.open(pdf_path)
     blocks = []
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
+    with fitz.open(pdf_path) as doc:
+        for page_num in range(len(doc)):
+            page = doc[page_num]
 
-        text = page.get_text("text").strip()
+            text = page.get_text("text").strip()
 
-        if text:
-            chunks = text.split("\n\n")
+            if text:
+                chunks = text.split("\n\n")
 
-            for chunk in chunks:
-                if len(chunk.strip()) > 50:
-                    blocks.append(
-                        {
-                            "type": "text",
-                            "page": page_num + 1,
-                            "content": chunk.strip()
-                        }
-                    )
+                for chunk in chunks:
+                    if len(chunk.strip()) > 50:
+                        blocks.append(
+                            {
+                                "type": "text",
+                                "page": page_num + 1,
+                                "content": chunk.strip()
+                            }
+                        )
 
-    print(f"✅ Extracted {len(blocks)} text chunks")
+    logger.info("Extracted %d text chunks", len(blocks))
     return blocks

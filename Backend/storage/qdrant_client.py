@@ -1,9 +1,13 @@
+import logging
+import os
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ✅ COLLECTION NAME MUST BE DEFINED GLOBALLY
 COLLECTION_NAME = "visrag_multimodal"
@@ -34,9 +38,9 @@ def setup_collection():
                 distance=Distance.COSINE
             )
         )
-        print("✅ Qdrant collection created")
+        logger.info("Qdrant collection created")
     else:
-        print("✅ Collection already exists")
+        logger.info("Collection already exists")
 
     # ✅ Payload Indexes
     client.create_payload_index(
@@ -57,4 +61,4 @@ def setup_collection():
         field_schema="keyword"
     )
 
-    print("✅ Payload indexes created: doc_id, page, type")
+    logger.info("Payload indexes created: doc_id, page, type")

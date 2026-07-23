@@ -15,13 +15,11 @@ def generate_answer(query, context, citations):
     Includes page citations.
     """
 
-    joined_context = "\n\n".join(context)
-
     prompt = f"""
     You are an AI assistant answering from a PDF.
 
     Context (retrieved from PDF):
-    {joined_context}
+    {context}
 
     Question:
     {query}

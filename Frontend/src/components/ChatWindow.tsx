@@ -95,8 +95,6 @@ Ask me anything about your PDF and I will answer with supporting images + tables
           tableData: v.tableData,
         })) || [];
 
-      console.log("✅ VISUALS RECEIVED:", visuals);
-
       /* ✅ Update Visual Panel */
       onNewResponse(visuals);
     } catch (err) {

@@ -1,23 +1,33 @@
+import logging
+import threading
+
 from sentence_transformers import SentenceTransformer
 from PIL import Image
 import torch
 from transformers import CLIPProcessor, CLIPModel
+
+logger = logging.getLogger(__name__)
 
 # ✅ Text model
 text_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 clip_model = None
 clip_processor = None
+_clip_lock = threading.Lock()
 
 
 def load_clip():
     global clip_model, clip_processor
 
+    # ✅ Double-checked locking: embed_image() runs in a threadpool (see app.py),
+    # so concurrent requests can call this from separate threads at once.
     if clip_model is None:
-        print("⏳ Loading CLIP...")
-        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-        print("✅ CLIP Loaded")
+        with _clip_lock:
+            if clip_model is None:
+                logger.info("Loading CLIP...")
+                clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+                clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+                logger.info("CLIP loaded")
 
 
 def embed_text(text: str):
