@@ -1,5 +1,7 @@
 # ============================
 # ✅ PYTHON BACKEND IGNORES
+# Claude Code
+.claude/
 # ============================
 
 # Virtual Environment
