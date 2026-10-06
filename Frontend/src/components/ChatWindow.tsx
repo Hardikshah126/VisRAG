@@ -4,14 +4,14 @@ import { Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MessageBubble, TypingIndicator, Message } from "./MessageBubble";
 
-import { askQuestion } from "@/lib/api";
+import { ApiError, askQuestion, type ChatTurn } from "@/lib/api";
 
 interface ChatWindowProps {
-  docId: string; // ✅ now required
+  docId: string;
   onNewResponse: (visuals: VisualEvidence[]) => void;
 }
 
-/* ✅ Visual Evidence Format */
+/* Visual evidence shown in the side panel */
 export interface VisualEvidence {
   id: string;
   type: "image" | "table";
@@ -21,103 +21,93 @@ export interface VisualEvidence {
   tableData?: string[][];
 }
 
+/** How many earlier messages the backend gets for follow-up questions. */
+const HISTORY_TURNS = 10;
+const MAX_TURN_CHARS = 4000; // backend limit per turn
+
+const WELCOME: Message = {
+  id: "welcome",
+  role: "assistant",
+  content: `### Welcome to VisRAG!
+
+Ask me anything about your PDF and I will answer with supporting images and tables.`,
+  timestamp: new Date(),
+};
+
 export function ChatWindow({ docId, onNewResponse }: ChatWindowProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content: `### ✅ Welcome to VisRAG!
-
-Ask me anything about your PDF and I will answer with supporting images + tables.`,
-      timestamp: new Date(),
-    },
-  ]);
-
+  const [messages, setMessages] = useState<Message[]>([WELCOME]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  /* ✅ Auto-scroll */
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  const nextId = useRef(0);
+  const newId = () => `m${nextId.current++}`;
 
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  /* ✅ Submit Question */
+  const buildHistory = (): ChatTurn[] =>
+    messages
+      .filter((m) => m.id !== WELCOME.id && !m.isError)
+      .slice(-HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_TURN_CHARS) }));
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isTyping) return;
 
     const question = input.trim();
+    const history = buildHistory();
 
-    /* ✅ User Message */
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: question,
-      timestamp: new Date(),
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, { id: newId(), role: "user", content: question, timestamp: new Date() }]);
     setInput("");
     setIsTyping(true);
 
     try {
-      /* ✅ Backend Call */
-      const res = await askQuestion(question, docId);
-
-      /* ✅ Assistant Message */
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: res.answer || "✅ Answer generated.",
-        sources: res.citations?.map((p: number) => ({
-          page: p,
-          text: "",
-        })),
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      /* ✅ FIX: Backend already returns correct visuals */
-      const visuals: VisualEvidence[] =
-        res.supporting_visuals?.map((v: any, idx: number) => ({
-          id: idx.toString(),
-          type: v.type, // ✅ image or table
-          src: v.src,   // ✅ already full URL
-          caption: v.caption,
-          page: v.page,
-          tableData: v.tableData,
-        })) || [];
-
-      /* ✅ Update Visual Panel */
-      onNewResponse(visuals);
-    } catch (err) {
-      console.error("❌ Ask Error:", err);
+      const res = await askQuestion(question, docId, history);
 
       setMessages((prev) => [
         ...prev,
         {
-          id: (Date.now() + 2).toString(),
+          id: newId(),
           role: "assistant",
-          content: "❌ Backend error while answering.",
+          content: res.answer || "The model returned an empty answer.",
+          sources: res.citations?.map((page) => ({ page, text: "" })),
           timestamp: new Date(),
         },
       ]);
-    }
 
-    setIsTyping(false);
+      onNewResponse(
+        (res.supporting_visuals ?? []).map((v) => ({
+          id: v.id,
+          type: v.type,
+          src: v.src ?? undefined, // relative; VisualPanel resolves it against the API origin
+          caption: v.caption ?? undefined,
+          page: v.page,
+          tableData: v.tableData ?? undefined,
+        })),
+      );
+    } catch (err) {
+      console.error("Ask error:", err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newId(),
+          role: "assistant",
+          isError: true,
+          content: err instanceof ApiError ? err.message : "Something went wrong while answering.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6" aria-live="polite">
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
@@ -126,7 +116,6 @@ Ask me anything about your PDF and I will answer with supporting images + tables
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="border-t bg-background p-4">
         <form onSubmit={handleSubmit} className="flex gap-3">
           <div className="relative flex-1">
@@ -135,6 +124,8 @@ Ask me anything about your PDF and I will answer with supporting images + tables
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask about your document..."
+              aria-label="Your question"
+              maxLength={2000}
               className="w-full px-4 py-3 pr-12 rounded-xl border bg-card"
               disabled={isTyping}
             />
@@ -146,6 +137,7 @@ Ask me anything about your PDF and I will answer with supporting images + tables
           <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
             <Button
               type="submit"
+              aria-label="Send"
               disabled={!input.trim() || isTyping}
               className="h-12 px-6 rounded-xl bg-primary"
             >

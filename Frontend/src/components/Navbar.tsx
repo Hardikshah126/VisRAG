@@ -43,20 +43,6 @@ export function Navbar({ pdfName }: NavbarProps) {
         </motion.div>
       )}
 
-      <nav className="flex items-center gap-4">
-        <a
-          href="#"
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          Docs
-        </a>
-        <a
-          href="#"
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          GitHub
-        </a>
-      </nav>
     </header>
   );
 }

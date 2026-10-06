@@ -3,15 +3,15 @@ import { motion } from "framer-motion";
 import { Sparkles, FileText, MessageSquare, Image } from "lucide-react";
 
 import { Navbar } from "@/components/Navbar";
-import { UploadBox } from "@/components/UploadBox";
+import { UploadBox, type UploadedDocument } from "@/components/UploadBox";
 
 export default function UploadPage() {
   const navigate = useNavigate();
 
-  // ✅ After upload → go to Chat page
-  const handleUploadComplete = (docId: string) => {
-    localStorage.setItem("doc_id", docId);
-    navigate("/chat", { state: { pdfName: docId } });
+  // After the backend has finished ingesting the PDF, go to the chat page.
+  // `docId` is the server-issued id; `pdfName` is only for display.
+  const handleUploadComplete = ({ docId, filename }: UploadedDocument) => {
+    navigate("/chat", { state: { docId, pdfName: filename } });
   };
 
   const features = [

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation, Navigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { FileText, ChevronLeft } from "lucide-react";
@@ -6,15 +7,25 @@ import { Link } from "react-router-dom";
 import { Navbar } from "@/components/Navbar";
 import { ChatWindow, VisualEvidence } from "@/components/ChatWindow";
 import { VisualPanel } from "@/components/VisualPanel";
+import { checkHealth } from "@/lib/api";
 
 export default function ChatPage() {
   const location = useLocation();
-  const pdfName = location.state?.pdfName as string | undefined;
+  const docId = location.state?.docId as string | undefined;
+  const pdfName = (location.state?.pdfName as string | undefined) ?? "document.pdf";
   const [visuals, setVisuals] = useState<VisualEvidence[]>([]);
   const [showPanel, setShowPanel] = useState(true);
 
+  // Real backend connectivity (not a hardcoded badge).
+  const { data: backendUp } = useQuery({
+    queryKey: ["health"],
+    queryFn: checkHealth,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
   // Redirect if no PDF was uploaded
-  if (!pdfName) {
+  if (!docId) {
     return <Navigate to="/" replace />;
   }
 
@@ -67,15 +78,17 @@ export default function ChatPage() {
 
           <div className="mt-auto p-4 border-t border-sidebar-border">
             <div className="flex items-center gap-2 text-xs text-sidebar-foreground/50">
-              <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span>AI Model Connected</span>
+              <div
+                className={`w-2 h-2 rounded-full ${backendUp ? "bg-success animate-pulse" : "bg-destructive"}`}
+              />
+              <span>{backendUp ? "Backend connected" : "Backend unreachable"}</span>
             </div>
           </div>
         </motion.aside>
 
         {/* Main chat area */}
         <main className="flex-1 flex flex-col min-w-0">
-          <ChatWindow docId={pdfName} onNewResponse={handleNewResponse} />
+          <ChatWindow docId={docId} onNewResponse={handleNewResponse} />
 
         </main>
 
