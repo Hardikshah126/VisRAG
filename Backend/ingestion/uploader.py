@@ -1,102 +1,74 @@
 import logging
 import uuid
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
+from typing import List
 
-from ingestion.embedder import embed_text, embed_image
-from storage.qdrant_client import client, COLLECTION_NAME
+from qdrant_client.models import PointStruct
+
+import config
+from ingestion.embedder import embed_images, embed_texts
+from storage.qdrant_client import COLLECTION_NAME, delete_document_points, get_client
 
 logger = logging.getLogger(__name__)
 
+UPSERT_BATCH = 64
 
-def upload_to_qdrant(blocks, doc_id: str):
+
+def upload_to_qdrant(blocks, doc_id: str) -> int:
     """
-    ✅ Upload multimodal blocks into ONE Qdrant collection
+    Embed and store text, table and image blocks for one document.
 
-    Stores:
-    ✅ text
-    ✅ tables
-    ✅ images (figures)
+    Text and tables go in the "text" vector space (MiniLM); images go in the
+    "image" space (CLIP). Embedding is batched. Returns the number of points
+    stored.
     """
-
     logger.info("Uploading '%s' into Qdrant collection = %s", doc_id, COLLECTION_NAME)
 
-    # ✅ Re-uploading a doc_id replaces its old points instead of duplicating them
-    client.delete(
-        collection_name=COLLECTION_NAME,
-        points_selector=Filter(
-            must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
-        ),
-    )
+    # Idempotent: clears any partial earlier attempt for this doc_id.
+    delete_document_points(doc_id)
 
-    points = []
+    text_blocks = [b for b in blocks if b["type"] in ("text", "table")]
+    image_blocks = [b for b in blocks if b["type"] == "image" and b.get("file_path")]
 
-    for block in blocks:
+    points: List[PointStruct] = []
 
-        block_type = block["type"]
-        point_id = str(uuid.uuid4())
+    # -- text + tables -------------------------------------------------------
+    vectors = embed_texts([b["content"] for b in text_blocks])
+    for block, vector in zip(text_blocks, vectors):
+        payload = {
+            "doc_id": doc_id,
+            "type": block["type"],
+            "page": block["page"],
+            "content": block["content"],
+        }
+        if block["type"] == "table":
+            payload["caption"] = block.get("caption", "Extracted Table")
+            payload["table_data"] = block.get("table_data", [])
+        points.append(
+            PointStruct(id=str(uuid.uuid4()), vector={config.TEXT_VECTOR: vector}, payload=payload)
+        )
 
-        # -----------------------------
-        # ✅ TEXT
-        # -----------------------------
-        if block_type == "text":
-            vector = embed_text(block["content"])
-
-            payload = {
-                "doc_id": doc_id,
-                "type": "text",
-                "page": block["page"],
-                "content": block["content"],
-            }
-
-        # -----------------------------
-        # ✅ TABLE
-        # -----------------------------
-        elif block_type == "table":
-            table_data = block.get("table_data", [])
-
-            vector = embed_text(str(table_data))
-
-            payload = {
-                "doc_id": doc_id,
-                "type": "table",
-                "page": block["page"],
-                "caption": block.get("caption", "Extracted Table"),
-                "table_data": table_data,
-            }
-
-        # -----------------------------
-        # ✅ IMAGE / FIGURE
-        # -----------------------------
-        elif block_type == "image":
-            file_path = block.get("file_path")
-            if not file_path:
-                continue
-
-            vector = embed_image(file_path)
-
-            payload = {
-                "doc_id": doc_id,
-                "type": "image",
-                "page": block["page"],
-                "caption": block.get("caption", "Extracted Figure"),
-                "file_path": file_path,
-            }
-
-        else:
+    # -- images ----------------------------------------------------------------
+    paths = [str(config.EXTRACTED_DIR / b["file_path"]) for b in image_blocks]
+    for block, vector in zip(image_blocks, embed_images(paths)):
+        if vector is None:
             continue
-
         points.append(
             PointStruct(
-                id=point_id,
-                vector=vector,
-                payload=payload
+                id=str(uuid.uuid4()),
+                vector={config.IMAGE_VECTOR: vector},
+                payload={
+                    "doc_id": doc_id,
+                    "type": "image",
+                    "page": block["page"],
+                    "caption": block.get("caption", "Extracted Figure"),
+                    "file_path": block["file_path"],
+                },
             )
         )
 
-    # ✅ Upload ALL points into ONE collection
-    client.upsert(
-        collection_name=COLLECTION_NAME,
-        points=points
-    )
+    client = get_client()
+    for start in range(0, len(points), UPSERT_BATCH):
+        client.upsert(collection_name=COLLECTION_NAME, points=points[start : start + UPSERT_BATCH])
 
-    logger.info("Uploaded %d multimodal points successfully!", len(points))
+    logger.info("Uploaded %d multimodal points successfully", len(points))
+    return len(points)
