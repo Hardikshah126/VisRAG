@@ -1,9 +1,34 @@
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Image, Table, FileText, Eye } from "lucide-react";
+import { resolveAssetUrl } from "@/lib/api";
 import type { VisualEvidence } from "./ChatWindow";
 
 interface VisualPanelProps {
   visuals: VisualEvidence[];
+}
+
+/** Figure with a fallback so a missing/broken file doesn't show a broken-image icon. */
+function FigureImage({ src, alt }: { src?: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  const url = resolveAssetUrl(src);
+
+  if (!url || failed) {
+    return (
+      <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+        Image not available
+      </div>
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt={alt}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="w-full h-full object-contain"
+    />
+  );
 }
 
 export function VisualPanel({ visuals }: VisualPanelProps) {
@@ -61,17 +86,7 @@ export function VisualPanel({ visuals }: VisualPanelProps) {
                   <>
                     {/* Image Preview */}
                     <div className="relative aspect-video bg-secondary overflow-hidden">
-                      {visual.src ? (
-                        <img
-                          src={visual.src}
-                          alt={visual.caption || "Visual evidence"}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-                          Image not available
-                        </div>
-                      )}
+                      <FigureImage src={visual.src} alt={visual.caption || "Visual evidence"} />
 
                       {/* Badge */}
                       <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-1 rounded-md bg-background/90 backdrop-blur-sm">
@@ -124,7 +139,7 @@ export function VisualPanel({ visuals }: VisualPanelProps) {
                     )}
 
                     {/* Table Data */}
-                    {visual.tableData ? (
+                    {visual.tableData && visual.tableData.length > 0 ? (
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">
                           <thead>
@@ -134,7 +149,7 @@ export function VisualPanel({ visuals }: VisualPanelProps) {
                                   key={i}
                                   className="px-3 py-2 text-left font-semibold text-foreground border-r last:border-r-0"
                                 >
-                                  {header}
+                                  {String(header ?? "")}
                                 </th>
                               ))}
                             </tr>
@@ -153,7 +168,7 @@ export function VisualPanel({ visuals }: VisualPanelProps) {
                                       key={cellIndex}
                                       className="px-3 py-2 text-muted-foreground border-r last:border-r-0"
                                     >
-                                      {cell}
+                                      {String(cell ?? "")}
                                     </td>
                                   ))}
                                 </tr>

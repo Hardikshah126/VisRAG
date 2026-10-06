@@ -1,82 +1,93 @@
-import os
-import re
+import hashlib
 import logging
+import os
 
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
+
+import config
 
 logger = logging.getLogger(__name__)
 
 
 def extract_figures(pdf_path: str, doc_id: str):
     """
-    ✅ Extract embedded images (figures) from PDF using PyMuPDF
+    Extract embedded images from the PDF into ``extracted/<doc_id>/``.
 
-    Saves figures into:
+    Filtering keeps retrieval from filling up with junk:
+    - images smaller than MIN_FIGURE_PX (icons, bullets, rules) are skipped
+    - each image object (xref) is taken once, so a logo repeated in every page
+      header is not stored per page
+    - byte-identical images are de-duplicated
+    - everything is re-encoded as PNG so browsers can always display it
+      (the raw stream may be JPX/CMYK), and soft masks are applied so
+      transparent images keep their transparency
 
-        extracted/figures/<doc_id>__figure1_page3.png
+    ``doc_id`` is a server-generated uuid hex, so it is safe as a directory name.
 
-    doc_id is embedded in the filename so figures from different documents
-    can never collide/overwrite each other on disk.
-
-    Returns blocks like:
-
-    {
-        type: "image",
-        page: 3,
-        caption: "Figure 1 extracted from page 3",
-        file_path: "...",
-        figure_index: 1
-    }
+    Returns blocks:
+        {"type": "image", "page": 3, "file_path": "<doc_id>/figure1_page3.png",
+         "caption": "Figure 1 (page 3)", "figure_index": 1}
+    ``file_path`` is relative to ``config.EXTRACTED_DIR``.
     """
-
-    os.makedirs("extracted/figures", exist_ok=True)
-
-    # ✅ Re-sanitize defensively even though app.py already sanitizes doc_id,
-    # so this function stays safe if ever called from elsewhere.
-    safe_doc_id = re.sub(r"[^A-Za-z0-9._-]", "_", doc_id or "doc")
+    out_dir = config.EXTRACTED_DIR / doc_id
+    os.makedirs(out_dir, exist_ok=True)
 
     figure_blocks = []
-    fig_counter = 1
+    seen_xrefs: set = set()
+    seen_hashes: set = set()
 
-    logger.info("Extracting figures using PyMuPDF for %s...", doc_id)
+    logger.info("Extracting figures from %s...", doc_id)
 
-    with fitz.open(pdf_path) as doc:
+    with pymupdf.open(pdf_path) as doc:
         for page_index in range(len(doc)):
-            page = doc[page_index]
+            page_num = page_index + 1
 
-            images = page.get_images(full=True)
+            for img in doc[page_index].get_images(full=True):
+                if len(figure_blocks) >= config.MAX_FIGURES:
+                    logger.warning("Figure cap (%d) reached; skipping the rest", config.MAX_FIGURES)
+                    return figure_blocks
 
-            if len(images) > 0:
-                logger.info("Page %d: found %d images", page_index + 1, len(images))
+                xref, smask = img[0], img[1]
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
 
-            for img in images:
-                xref = img[0]
+                try:
+                    pix = pymupdf.Pixmap(doc, xref)
+                    if min(pix.width, pix.height) < config.MIN_FIGURE_PX:
+                        continue
+                    if pix.colorspace is None:  # stencil mask, not a picture
+                        continue
+                    if pix.colorspace.n >= 4:  # CMYK -> RGB
+                        pix = pymupdf.Pixmap(pymupdf.csRGB, pix)
+                    if smask:
+                        pix = pymupdf.Pixmap(pix, pymupdf.Pixmap(doc, smask))
+                    data = pix.tobytes("png")
+                except Exception:
+                    logger.warning("Skipping unreadable image xref=%s on page %d", xref, page_num, exc_info=True)
+                    continue
 
-                base_img = doc.extract_image(xref)
-                img_bytes = base_img["image"]
-                img_ext = base_img["ext"]
+                if len(data) < config.MIN_FIGURE_BYTES:
+                    continue
+                digest = hashlib.sha1(data).hexdigest()
+                if digest in seen_hashes:
+                    continue
+                seen_hashes.add(digest)
 
-                page_num = page_index + 1
-
-                img_path = (
-                    f"extracted/figures/{safe_doc_id}__figure{fig_counter}_page{page_num}.{img_ext}"
-                )
-
-                with open(img_path, "wb") as f:
-                    f.write(img_bytes)
+                index = len(figure_blocks) + 1
+                filename = f"figure{index}_page{page_num}.png"
+                with open(out_dir / filename, "wb") as f:
+                    f.write(data)
 
                 figure_blocks.append(
                     {
                         "type": "image",
                         "page": page_num,
-                        "file_path": img_path,
-                        "caption": f"Figure {fig_counter} extracted from page {page_num}",
-                        "figure_index": fig_counter,
+                        "file_path": f"{doc_id}/{filename}",
+                        "caption": f"Figure {index} (page {page_num})",
+                        "figure_index": index,
                     }
                 )
 
-                fig_counter += 1
-
     logger.info("Total extracted figures: %d", len(figure_blocks))
-
     return figure_blocks

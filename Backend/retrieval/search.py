@@ -1,144 +1,144 @@
+import logging
 import re
-from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+from dataclasses import dataclass, field
+from typing import List
 
-from ingestion.embedder import embed_text
-from storage.qdrant_client import client, COLLECTION_NAME
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
+
+import config
+from ingestion.embedder import embed_clip_text, embed_text
+from storage.qdrant_client import COLLECTION_NAME, get_client
+
+logger = logging.getLogger(__name__)
+
+_PAGE_QUERY = re.compile(r"\bpage\s+(\d+)\b", re.IGNORECASE)
 
 
-def retrieve(query: str, doc_id: str, top_k: int = 8):
-    """
-    ✅ Production Multimodal Retrieval
+@dataclass
+class RetrievalResult:
+    context: str = ""
+    visuals: List[dict] = field(default_factory=list)
+    pages: List[int] = field(default_factory=list)  # every page that contributed
 
-    Retrieves:
-    ✅ Text chunks
-    ✅ Table blocks
-    ✅ Figures (real extracted images)
 
-    Supports:
-    ✅ Page-specific queries ("Explain page 5")
-    ✅ Auto-return tables and visuals
-
-    Returns:
-        context_text (str)
-        visuals (list)
-        citations (list[int])
-    """
-
-    # -------------------------------
-    # ✅ Step 0: Detect page query
-    # -------------------------------
-    match = re.search(r"page\s+(\d+)", query.lower())
-    page_number = int(match.group(1)) if match else None
-
-    # -------------------------------
-    # ✅ Step 1: Embed query
-    # -------------------------------
-    query_vector = embed_text(query)
-
-    # -------------------------------
-    # ✅ Step 2: Build Filter
-    # -------------------------------
-    must_conditions = [
+def _conditions(doc_id: str, block_types, page=None):
+    conds = [
         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-        # ✅ Images use CLIP vectors, incompatible with the MiniLM query vector
-        # used here — exclude them so they don't waste top_k slots on a
-        # meaningless cross-space similarity score. Images are fetched
-        # separately below via scroll() on the relevant pages.
-        FieldCondition(key="type", match=MatchAny(any=["text", "table"])),
+        FieldCondition(key="type", match=MatchAny(any=list(block_types))),
     ]
+    if page is not None:
+        conds.append(FieldCondition(key="page", match=MatchValue(value=page)))
+    return conds
 
-    if page_number:
-        must_conditions.append(
-            FieldCondition(key="page", match=MatchValue(value=page_number))
-        )
 
-    query_filter = Filter(must=must_conditions)
+def _image_visual(point) -> dict | None:
+    payload = point.payload or {}
+    file_path = payload.get("file_path")
+    if not file_path or not (config.EXTRACTED_DIR / file_path).is_file():
+        return None
+    return {
+        "id": str(point.id),
+        "type": "image",
+        # Relative to the API origin; the frontend knows where the API lives.
+        "src": f"/extracted/{file_path}",
+        "caption": payload.get("caption", "Extracted Figure"),
+        "page": payload.get("page", -1),
+    }
 
-    # -------------------------------
-    # ✅ Step 3: Query Qdrant
-    # -------------------------------
-    results = client.query_points(
-        collection_name=COLLECTION_NAME,   # ✅ FIXED COLLECTION
-        query=query_vector,
+
+def retrieve(query: str, doc_id: str, top_k: int | None = None) -> RetrievalResult:
+    """
+    Multimodal retrieval for one document.
+
+    - Text and tables: MiniLM vector search over the "text" vector space.
+    - Figures: CLIP text->image search over the "image" vector space, plus
+      figures sitting on the pages the text hits came from.
+    - "explain page 5"-style queries are restricted to that page.
+    """
+    top_k = top_k or config.TOP_K_TEXT
+    client = get_client()
+
+    match = _PAGE_QUERY.search(query)
+    page_number = int(match.group(1)) if match and int(match.group(1)) >= 1 else None
+
+    # -- text + tables -----------------------------------------------------------
+    hits = client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=embed_text(query),
+        using=config.TEXT_VECTOR,
         limit=top_k,
-        query_filter=query_filter,
-        with_payload=True
+        query_filter=Filter(must=_conditions(doc_id, ["text", "table"], page_number)),
+        with_payload=True,
     ).points
 
-    context_chunks = []
-    visuals = []
-    citations = set()
-    relevant_pages = set()
+    context_chunks: List[str] = []
+    visuals: List[dict] = []
+    pages: set = set()
+    table_count = 0
 
-    # -------------------------------
-    # ✅ Step 4: Build Context + Tables
-    # -------------------------------
-    for r in results:
-        payload = r.payload
+    for hit in hits:
+        payload = hit.payload or {}
         page = payload.get("page", -1)
-        block_type = payload.get("type")
+        pages.add(page)
 
-        citations.add(page)
-        relevant_pages.add(page)
+        if payload.get("type") == "table":
+            caption = payload.get("caption", "Extracted Table")
+            context_chunks.append(f"[Page {page}] {caption}\n{payload.get('content', '')}")
+            if table_count < config.MAX_VISUAL_TABLES:
+                table_count += 1
+                visuals.append(
+                    {
+                        "id": str(hit.id),
+                        "type": "table",
+                        "caption": caption,
+                        "page": page,
+                        "tableData": payload.get("table_data", []),
+                    }
+                )
+        else:
+            context_chunks.append(f"[Page {page}]\n{payload.get('content', '')}")
 
-        # ✅ TEXT
-        if block_type == "text":
-            context_chunks.append(payload.get("content", ""))
+    # -- figures -------------------------------------------------------------------
+    image_visuals: List[dict] = []
+    seen_ids: set = set()
 
-        # ✅ TABLE
-        elif block_type == "table":
-            table_data = payload.get("table_data", [])
+    def add_image(point):
+        visual = _image_visual(point)
+        if visual and visual["id"] not in seen_ids and len(image_visuals) < config.MAX_VISUAL_IMAGES:
+            seen_ids.add(visual["id"])
+            image_visuals.append(visual)
 
-            context_chunks.append(
-                f"\nTABLE (Page {page}):\n{table_data}\n"
-            )
-
-            visuals.append({
-                "id": str(r.id),
-                "type": "table",
-                "caption": payload.get("caption", "Extracted Table"),
-                "page": page,
-                "tableData": table_data,
-            })
-
-    # -------------------------------
-    # ✅ Step 5: Fetch Figures from Same Pages
-    # -------------------------------
-    for page in relevant_pages:
-
-        image_filter = Filter(
-            must=[
-                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-                FieldCondition(key="page", match=MatchValue(value=page)),
-                FieldCondition(key="type", match=MatchValue(value="image")),
-            ]
-        )
-
-        image_results, _ = client.scroll(
+    try:
+        image_hits = client.query_points(
             collection_name=COLLECTION_NAME,
-            scroll_filter=image_filter,
+            query=embed_clip_text(query),
+            using=config.IMAGE_VECTOR,
+            limit=config.TOP_K_IMAGES,
+            query_filter=Filter(must=_conditions(doc_id, ["image"], page_number)),
+            with_payload=True,
+        ).points
+        for point in image_hits:
+            add_image(point)
+    except Exception:
+        # Image search is a bonus; never let it take down a text answer.
+        logger.warning("CLIP image search failed; falling back to page-linked figures", exc_info=True)
+
+    for page in sorted(p for p in pages if p != -1):
+        page_images, _ = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=Filter(must=_conditions(doc_id, ["image"], page)),
             limit=2,
-            with_payload=True
+            with_payload=True,
         )
+        for point in page_images:
+            add_image(point)
 
-        for img in image_results:
-            img_payload = img.payload
-            file_path = img_payload.get("file_path")
+    for visual in image_visuals:
+        pages.add(visual["page"])
+    visuals.extend(image_visuals)
 
-            if not file_path:
-                continue
-
-            visuals.append({
-                "id": str(img.id),
-                "type": "image",
-                "src": f"http://127.0.0.1:8000/extracted/{file_path.replace('extracted/', '')}",
-                "caption": img_payload.get("caption", "Extracted Figure"),
-                "page": page,
-            })
-
-    # -------------------------------
-    # ✅ Final Output
-    # -------------------------------
-    context_text = "\n\n".join(context_chunks)
-
-    return context_text, visuals, sorted(list(citations))
+    return RetrievalResult(
+        context="\n\n".join(context_chunks),
+        visuals=visuals,
+        pages=sorted(p for p in pages if p != -1),
+    )
